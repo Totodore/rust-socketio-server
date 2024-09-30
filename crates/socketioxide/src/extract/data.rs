@@ -1,11 +1,11 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use crate::handler::{FromConnectParts, FromMessageParts};
-use crate::parser::DecodeError;
+use crate::handler::{FromConnectParts, FromMessage, FromMessageParts};
+use crate::parser::{DecodeError, Parser};
 use crate::{adapter::Adapter, socket::Socket};
 use bytes::Bytes;
-use serde::de::DeserializeOwned;
+use serde::de::{Deserialize, DeserializeOwned};
 use socketioxide_core::parser::Parse;
 use socketioxide_core::Value;
 
@@ -70,6 +70,37 @@ where
     ) -> Result<Self, Infallible> {
         let parser = s.parser();
         Ok(TryData(parser.decode_value(v, true)))
+    }
+}
+
+/// An extractor that returns the incoming value without deserializing it.
+/// You can then call [`RawValue::deserialize`] to deserialize with a borrowed value.
+#[derive(Debug)]
+pub struct RawValue {
+    inner: Value,
+    parser: Parser,
+}
+impl RawValue {
+    /// Deserialize the raw value to any type. Contrary to the [`Data`] extractor the type
+    /// can be unsized such as `&str` or `&[u8]`.
+    pub fn deserialize<'de, T: Deserialize<'de> + ?Sized>(&'de self) -> Result<T, DecodeError> {
+        self.parser.decode_value(&self.inner, true)
+    }
+}
+
+impl<A: Adapter> FromMessage<A> for RawValue {
+    type Error = Infallible;
+
+    fn from_message(
+        s: Arc<Socket<A>>,
+        v: Value,
+        _: Vec<Bytes>,
+        _: Option<i64>,
+    ) -> Result<Self, Self::Error> {
+        Ok(RawValue {
+            inner: v,
+            parser: s.parser(),
+        })
     }
 }
 

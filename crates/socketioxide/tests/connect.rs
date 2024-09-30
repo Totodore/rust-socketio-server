@@ -9,8 +9,6 @@ use socketioxide::{
 use socketioxide_core::{parser::Parse, Value};
 use socketioxide_parser_common::CommonParser;
 use tokio::sync::mpsc;
-use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
 
 fn create_msg(ns: &'static str, event: &str, data: impl Serialize) -> engineioxide::Packet {
     let parser = CommonParser::default();

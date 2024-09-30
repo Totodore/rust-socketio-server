@@ -6,7 +6,7 @@ use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use rmpv::Value;
 use socketioxide::{
-    extract::{AckSender, Data, SocketRef},
+    extract::{AckSender, Data, RawValue, SocketRef},
     SocketIo,
 };
 use tokio::net::TcpListener;
@@ -16,6 +16,10 @@ use tracing_subscriber::FmtSubscriber;
 fn on_connect(socket: SocketRef, Data(data): Data<Value>) {
     info!(?data, ns = socket.ns(), ?socket.id, "Socket.IO connected:");
     socket.emit("auth", &data).ok();
+
+    socket.on("test", move |raw: RawValue| {
+        let data: &str = raw.deserialize().unwrap();
+    });
 
     socket.on("message", |socket: SocketRef, Data::<[Value; 3]>(data)| {
         info!(?data, "Received event:");
