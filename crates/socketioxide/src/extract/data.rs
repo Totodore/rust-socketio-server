@@ -6,6 +6,7 @@ use crate::parser::{DecodeError, Parser};
 use crate::{adapter::Adapter, socket::Socket};
 use bytes::Bytes;
 use serde::de::{Deserialize, DeserializeOwned};
+use serde::ser::SerializeStruct;
 use socketioxide_core::parser::Parse;
 use socketioxide_core::Value;
 
@@ -80,11 +81,30 @@ pub struct RawValue {
     inner: Value,
     parser: Parser,
 }
+
 impl RawValue {
     /// Deserialize the raw value to any type. Contrary to the [`Data`] extractor the type
     /// can be unsized such as `&str` or `&[u8]`.
     pub fn deserialize<'de, T: Deserialize<'de> + ?Sized>(&'de self) -> Result<T, DecodeError> {
         self.parser.decode_value(&self.inner, true)
+    }
+}
+
+impl serde::Serialize for RawValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        const TOKEN: &str = "$socketioxide::private::RawValue";
+        const TOKEN_BIN: &str = "$socketioxide::private::RawValueBin";
+        let mut s = serializer.serialize_struct(TOKEN, 1)?;
+        //TODO: Determine before serialization that it is this kind of type.
+        //Make a RawDeserialization that will be able to build a Value Payload from this data.
+        match &self.inner {
+            Value::Str(d, bins) => {
+                s.serialize_field(TOKEN, d)?;
+                s.serialize_field(TOKEN_BIN, bins)?;
+            }
+            Value::Bytes(d) => s.serialize_field(TOKEN, d)?,
+        };
+        s.end()
     }
 }
 

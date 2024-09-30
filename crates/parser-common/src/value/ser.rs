@@ -303,7 +303,7 @@ impl<'a, S: ser::Serializer> serde::Serializer for Serializer<'a, S> {
         use serde::ser::SerializeMap;
         let num = {
             let bins = unsafe { self.binary_payloads.get().as_mut().unwrap() };
-            bins.push(Bytes::copy_from_slice(v)); //TODO: avoid copy ?
+            bins.push(Bytes::copy_from_slice(v));
             bins.len() - 1
         };
 

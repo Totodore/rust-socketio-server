@@ -5,7 +5,11 @@ use std::{
 
 use bytes::Bytes;
 use engineioxide::Str;
-use serde::{de::Visitor, ser::Impossible, Deserialize, Serialize};
+use serde::{
+    de::Visitor,
+    ser::{Impossible, SerializeStruct},
+    Deserialize, Serialize,
+};
 
 use crate::{packet::Packet, Value};
 
@@ -185,41 +189,82 @@ where
     }
 }
 
-/// Serializer and deserializer that simply return if the root object is a tuple or not.
-/// It is used with [`is_de_tuple`] and [`is_ser_tuple`].
-/// Thanks to this information we can expand tuple data into multiple arguments
-/// while serializing vectors as a single value.
-struct IsTupleSerde;
-#[derive(Debug)]
-struct IsTupleSerdeError(bool);
-impl fmt::Display for IsTupleSerdeError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "IsTupleSerializerError: {}", self.0)
+const TOKEN: &str = "$socketioxide_core::parser::Value";
+
+impl Serialize for Value {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_unit_struct(TOKEN)
     }
 }
-impl std::error::Error for IsTupleSerdeError {}
-impl serde::ser::Error for IsTupleSerdeError {
-    fn custom<T: fmt::Display>(_msg: T) -> Self {
-        IsTupleSerdeError(false)
-    }
-}
-impl serde::de::Error for IsTupleSerdeError {
-    fn custom<T: fmt::Display>(_msg: T) -> Self {
-        IsTupleSerdeError(false)
+impl<'de> Deserialize<'de> for Value {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct RawValueVisitor;
+        impl<'de> serde::de::Visitor<'de> for RawValueVisitor {
+            type Value = Value;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                write!(formatter, "any valid RawValue")
+            }
+        }
+        deserializer.deserialize_unit_struct(TOKEN, RawValueVisitor)
     }
 }
 
-impl<'de> serde::Deserializer<'de> for IsTupleSerde {
-    type Error = IsTupleSerdeError;
+/// Serializer and deserializer that simply return metdata informations about the root Type.
+/// It is used with [`get_de_obj_type`] and [`get_ser_obj_type`].
+/// Thanks to this information we can :
+/// * expand tuple data into multiple arguments while serializing vectors as a single value.
+/// * skip ser/de with [`RawValue`]
+struct GetRootObjType;
+#[derive(Debug, PartialEq, Eq)]
+pub enum CustomType {
+    Tuple,
+    RawVal,
+    Other,
+}
+#[derive(Debug)]
+struct GetCustomTypeError(CustomType);
+impl fmt::Display for GetCustomTypeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "IsTupleSerializerError: {:?}", self.0)
+    }
+}
+impl std::error::Error for GetCustomTypeError {}
+impl serde::ser::Error for GetCustomTypeError {
+    fn custom<T: fmt::Display>(_msg: T) -> Self {
+        GetCustomTypeError(CustomType::Other)
+    }
+}
+impl serde::de::Error for GetCustomTypeError {
+    fn custom<T: fmt::Display>(_msg: T) -> Self {
+        GetCustomTypeError(CustomType::Other)
+    }
+}
+
+impl<'de> serde::Deserializer<'de> for GetRootObjType {
+    type Error = GetCustomTypeError;
 
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str
-        string unit unit_struct seq  map
+        string unit seq  map
         struct enum identifier ignored_any bytes byte_buf option
     }
 
+    fn deserialize_unit_struct<V>(
+        self,
+        name: &'static str,
+        _visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        match name {
+            TOKEN => Err(GetCustomTypeError(CustomType::RawVal)),
+            _ => Err(GetCustomTypeError(CustomType::Other)),
+        }
+    }
     fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        Err(IsTupleSerdeError(false))
+        Err(GetCustomTypeError(CustomType::Other))
     }
 
     fn deserialize_tuple<V: Visitor<'de>>(
@@ -227,7 +272,7 @@ impl<'de> serde::Deserializer<'de> for IsTupleSerde {
         _len: usize,
         _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        Err(IsTupleSerdeError(true))
+        Err(GetCustomTypeError(CustomType::Tuple))
     }
 
     fn deserialize_tuple_struct<V: Visitor<'de>>(
@@ -236,7 +281,7 @@ impl<'de> serde::Deserializer<'de> for IsTupleSerde {
         _len: usize,
         _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        Err(IsTupleSerdeError(true))
+        Err(GetCustomTypeError(CustomType::Tuple))
     }
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
@@ -244,94 +289,97 @@ impl<'de> serde::Deserializer<'de> for IsTupleSerde {
         _name: &'static str,
         _visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        Err(IsTupleSerdeError(true))
+        Err(GetCustomTypeError(CustomType::Tuple))
     }
 }
 
-impl serde::Serializer for IsTupleSerde {
-    type Ok = bool;
-    type Error = IsTupleSerdeError;
-    type SerializeSeq = Impossible<bool, IsTupleSerdeError>;
-    type SerializeTuple = Impossible<bool, IsTupleSerdeError>;
-    type SerializeTupleStruct = Impossible<bool, IsTupleSerdeError>;
-    type SerializeTupleVariant = Impossible<bool, IsTupleSerdeError>;
-    type SerializeMap = Impossible<bool, IsTupleSerdeError>;
-    type SerializeStruct = Impossible<bool, IsTupleSerdeError>;
-    type SerializeStructVariant = Impossible<bool, IsTupleSerdeError>;
+impl serde::Serializer for GetRootObjType {
+    type Ok = CustomType;
+    type Error = GetCustomTypeError;
+    type SerializeSeq = Impossible<CustomType, GetCustomTypeError>;
+    type SerializeTuple = Impossible<CustomType, GetCustomTypeError>;
+    type SerializeTupleStruct = Impossible<CustomType, GetCustomTypeError>;
+    type SerializeTupleVariant = Impossible<CustomType, GetCustomTypeError>;
+    type SerializeMap = Impossible<CustomType, GetCustomTypeError>;
+    type SerializeStruct = Impossible<CustomType, GetCustomTypeError>;
+    type SerializeStructVariant = Impossible<CustomType, GetCustomTypeError>;
 
     fn serialize_bool(self, _v: bool) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_i8(self, _v: i8) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_i16(self, _v: i16) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_i32(self, _v: i32) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_i64(self, _v: i64) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_u8(self, _v: u8) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_u16(self, _v: u16) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_u32(self, _v: u32) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_u64(self, _v: u64) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_f32(self, _v: f32) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_f64(self, _v: f64) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_char(self, _v: char) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_str(self, _v: &str) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_bytes(self, _v: &[u8]) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_some<T>(self, _value: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + serde::Serialize,
     {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
-    fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+    fn serialize_unit_struct(self, name: &'static str) -> Result<Self::Ok, Self::Error> {
+        match name {
+            TOKEN => Ok(CustomType::RawVal),
+            _ => Ok(CustomType::Other),
+        }
     }
 
     fn serialize_unit_variant(
@@ -340,7 +388,7 @@ impl serde::Serializer for IsTupleSerde {
         _variant_index: u32,
         _variant: &'static str,
     ) -> Result<Self::Ok, Self::Error> {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_newtype_struct<T>(
@@ -351,7 +399,7 @@ impl serde::Serializer for IsTupleSerde {
     where
         T: ?Sized + serde::Serialize,
     {
-        Ok(true)
+        Ok(CustomType::Tuple)
     }
 
     fn serialize_newtype_variant<T>(
@@ -364,15 +412,15 @@ impl serde::Serializer for IsTupleSerde {
     where
         T: ?Sized + serde::Serialize,
     {
-        Ok(false)
+        Ok(CustomType::Other)
     }
 
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
-        Err(IsTupleSerdeError(false))
+        Err(GetCustomTypeError(CustomType::Other))
     }
 
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        Err(IsTupleSerdeError(true))
+        Err(GetCustomTypeError(CustomType::Tuple))
     }
 
     fn serialize_tuple_struct(
@@ -380,7 +428,7 @@ impl serde::Serializer for IsTupleSerde {
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        Err(IsTupleSerdeError(true))
+        Err(GetCustomTypeError(CustomType::Tuple))
     }
 
     fn serialize_tuple_variant(
@@ -390,11 +438,11 @@ impl serde::Serializer for IsTupleSerde {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        Err(IsTupleSerdeError(false))
+        Err(GetCustomTypeError(CustomType::Other))
     }
 
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
-        Err(IsTupleSerdeError(false))
+        Err(GetCustomTypeError(CustomType::Other))
     }
 
     fn serialize_struct(
@@ -402,7 +450,7 @@ impl serde::Serializer for IsTupleSerde {
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        Err(IsTupleSerdeError(false))
+        Err(GetCustomTypeError(CustomType::Other))
     }
 
     fn serialize_struct_variant(
@@ -412,46 +460,54 @@ impl serde::Serializer for IsTupleSerde {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
-        Err(IsTupleSerdeError(false))
+        Err(GetCustomTypeError(CustomType::Other))
     }
 }
 
-pub fn is_ser_tuple<T: ?Sized + serde::Serialize>(value: &T) -> bool {
-    match value.serialize(IsTupleSerde) {
-        Ok(v) | Err(IsTupleSerdeError(v)) => v,
+pub fn get_ser_obj_type<T: ?Sized + serde::Serialize>(value: &T) -> CustomType {
+    match value.serialize(GetRootObjType) {
+        Ok(v) | Err(GetCustomTypeError(v)) => v,
     }
 }
 
-pub fn is_de_tuple<'de, T: serde::Deserialize<'de>>() -> bool {
-    match T::deserialize(IsTupleSerde) {
+pub fn get_de_obj_type<'de, T: serde::Deserialize<'de>>() -> CustomType {
+    match T::deserialize(GetRootObjType) {
         Ok(_) => unreachable!(),
-        Err(IsTupleSerdeError(v)) => v,
+        Err(GetCustomTypeError(v)) => v,
     }
 }
+
 #[cfg(test)]
 mod test {
     use super::*;
     use serde::{Deserialize, Serialize};
 
     #[test]
-    fn is_tuple() {
-        assert!(is_ser_tuple(&(1, 2, 3)));
-        assert!(is_de_tuple::<(usize, usize, usize)>());
+    fn get_obj_type() {
+        assert_eq!(get_ser_obj_type(&(1, 2, 3)), CustomType::Tuple);
+        assert_eq!(
+            get_de_obj_type::<(usize, usize, usize)>(),
+            CustomType::Tuple
+        );
 
-        assert!(is_ser_tuple(&[1, 2, 3]));
-        assert!(is_de_tuple::<[usize; 3]>());
+        assert_eq!(get_ser_obj_type(&[1, 2, 3]), CustomType::Tuple);
+        assert_eq!(get_de_obj_type::<[usize; 3]>(), CustomType::Tuple);
 
         #[derive(Serialize, Deserialize)]
         struct TupleStruct<'a>(&'a str);
-        assert!(is_ser_tuple(&TupleStruct("test")));
-        assert!(is_de_tuple::<TupleStruct>());
+        assert_eq!(get_ser_obj_type(&TupleStruct("test")), CustomType::Tuple);
+        assert_eq!(get_de_obj_type::<TupleStruct>(), CustomType::Tuple);
 
-        assert!(!is_ser_tuple(&vec![1, 2, 3]));
-        assert!(!is_de_tuple::<Vec<usize>>());
+        let value = Value::Bytes(Bytes::new());
+        assert_eq!(get_ser_obj_type(&value), CustomType::RawVal);
+        assert_eq!(get_de_obj_type::<Value>(), CustomType::RawVal);
+
+        assert_eq!(get_ser_obj_type(&vec![1, 2, 3]), CustomType::Other);
+        assert_eq!(get_de_obj_type::<Vec<usize>>(), CustomType::Other);
 
         #[derive(Serialize, Deserialize)]
         struct UnitStruct;
-        assert!(!is_ser_tuple(&UnitStruct));
-        assert!(!is_de_tuple::<UnitStruct>());
+        assert_eq!(get_ser_obj_type(&UnitStruct), CustomType::Other);
+        assert_eq!(get_de_obj_type::<UnitStruct>(), CustomType::Other);
     }
 }

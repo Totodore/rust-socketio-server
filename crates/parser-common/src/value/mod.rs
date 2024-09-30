@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use socketioxide_core::{
-    parser::{is_de_tuple, is_ser_tuple, FirstElement},
+    parser::{get_de_obj_type, get_ser_obj_type, CustomType, FirstElement},
     Str, Value,
 };
 
@@ -23,25 +23,25 @@ pub fn from_value<'de, T: Deserialize<'de>>(
         Value::Bytes(_) => panic!("unexpected binary data"),
     };
     let empty = Vec::new();
-    let is_tuple = is_de_tuple::<T>();
-    if is_tuple {
-        de::from_str(value.as_str(), bins.as_ref().unwrap_or(&empty), with_event)
-    } else {
-        de::from_str_seed(
+    match get_de_obj_type::<T>() {
+        CustomType::Tuple => {
+            de::from_str(value.as_str(), bins.as_ref().unwrap_or(&empty), with_event)
+        }
+        CustomType::Other | CustomType::RawVal => de::from_str_seed(
             value.as_str(),
             bins.as_ref().unwrap_or(&empty),
             FirstElement::default(),
             with_event,
-        )
+        ),
     }
 }
 
 /// Serialize any serializable data and an event to a generic [`SocketIoValue`] data.
 pub fn to_value<T: ?Sized + Serialize>(data: &T, event: Option<&str>) -> serde_json::Result<Value> {
-    let (writer, binary) = if is_ser_tuple(data) {
-        ser::into_str(data, event)?
-    } else {
-        ser::into_str(&(data,), event)?
+    let (writer, binary) = match get_ser_obj_type(data) {
+        CustomType::Tuple => ser::into_str(data, event)?,
+        CustomType::RawVal => todo!(),
+        CustomType::Other => ser::into_str(&(data,), event)?,
     };
     let data = unsafe { Str::from_bytes_unchecked(Bytes::from(writer)) };
     Ok(Value::Str(data, (!binary.is_empty()).then_some(binary)))
